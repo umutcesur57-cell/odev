@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ödev Sitesi</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root{--bg:#f4f6fb;--card:#fff;--ink:#1c2333;--mut:#6b7385;--pri:#4f46e5;--ok:#16a34a;--bad:#dc2626;--line:#e3e7f0}
+  @media (prefers-color-scheme:dark){:root{--bg:#10131c;--card:#1a1f2e;--ink:#e8ebf4;--mut:#8f98ad;--line:#2a3144}}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;background:var(--bg);color:var(--ink)}
+  header{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;background:var(--pri);color:#fff;position:sticky;top:0;z-index:5}
+  header b{font-size:18px}
+  header small{opacity:.85;margin-right:10px}
+  main{max-width:760px;margin:0 auto;padding:14px 16px 60px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin:12px 0}
+  h2{font-size:16px;margin:18px 0 6px}
+  input,textarea,select,button{font:inherit;color:inherit}
+  input,textarea,select{width:100%;padding:10px;border:1px solid var(--line);border-radius:10px;background:var(--bg);margin:4px 0}
+  button{padding:10px 14px;border:0;border-radius:10px;background:var(--pri);color:#fff;cursor:pointer}
+  button.g{background:transparent;color:var(--mut);border:1px solid var(--line)}
+  button.r{background:var(--bad)}
+  button.s{padding:6px 10px;font-size:13px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .row>*{flex:1}
+  .tabs{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px}
+  .tabs button{flex:0 0 auto;background:var(--card);color:var(--ink);border:1px solid var(--line)}
+  .tabs button.on{background:var(--pri);color:#fff;border-color:var(--pri)}
+  .mut{color:var(--mut);font-size:13px}
+  .tag{display:inline-block;padding:2px 8px;border-radius:99px;font-size:12px;background:var(--line)}
+  .tag.ok{background:#16a34a22;color:var(--ok)} .tag.late{background:#dc262622;color:var(--bad)}
+  .ann{border-left:4px solid var(--pri);padding:8px 12px;margin:8px 0;background:var(--bg);border-radius:6px}
+  .sub{border-top:1px solid var(--line);padding:10px 0}
+  .sub:first-child{border-top:0}
+  .login{max-width:380px;margin:60px auto}
+  .err{color:var(--bad);font-size:14px;min-height:20px}
+  .st{font-size:12px;color:#fff;opacity:.9}
+  label.chk{display:flex;align-items:center;gap:8px}
+  label.chk input{width:auto;margin:0}
+</style>
+</head>
+<body>
+<header><b>📚 Ödev Sitesi</b><div><small id="who"></small><span class="st" id="live"></span> <button class="g s" id="out" style="display:none;color:#fff;border-color:#fff8">Çıkış</button></div></header>
+<main id="app"></main>
+
+<script>
+const SUPABASE_URL = "https://xovcdszzrbsychfimovr.supabase.co";
+const SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhvdmNkc3p6cmJzeWNoZmltb3ZyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIwNzAzMjUsImV4cCI6MjEwNzY0NjMyNX0.dC7Ylfz7x6KSJCqNLoukPgJm6PZ9Lx6S1oYKFvoutBA";
+const db = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt = (d) => d ? new Date(d).toLocaleDateString("tr-TR") : "";
+
+let session = JSON.parse(localStorage.getItem("odev_session") || "null");
+let data = { students: [], homeworks: [], subs: [], anns: [] };
+let tab = "odev";
+let openHw = null;
+
+async function load() {
+  const [s, h, u, a] = await Promise.all([
+    db.from("students").select("*").order("name"),
+    db.from("homeworks").select("*").order("created_at", { ascending: false }),
+    db.from("submissions").select("*"),
+    db.from("announcements").select("*").order("created_at", { ascending: false })
+  ]);
+  if (s.error || h.error) { $("#live").textContent = "⚠️ Bağlantı yok"; return; }
+  data = { students: s.data, homeworks: h.data, subs: u.data || [], anns: a.data || [] };
+  $("#live").textContent = "🟢 Canlı";
+  render();
+}
+
+function busy() {
+  const a = document.activeElement;
+  return a && ["INPUT", "TEXTAREA", "SELECT"].includes(a.tagName) && a.value !== "" && !a.dataset.live;
+}
+let pending = false;
+function softLoad() { if (busy()) { pending = true; return; } load(); }
+document.addEventListener("focusout", () => { if (pending) { pending = false; setTimeout(load, 300); } });
+
+function listen() {
+  db.channel("hepsi")
+    .on("postgres_changes", { event: "*", schema: "public" }, softLoad)
+    .subscribe();
+  setInterval(softLoad, 15000);
+}
+
+function loginView() {
+  $("#who").textContent = ""; $("#out").style.display = "none";
+  $("#app").innerHTML = `
+  <div class="card login">
+    <h2 style="margin-top:0">Giriş</h2>
+    <select id="role"><option value="student">Öğrenci</option><option value="teacher">Öğretmen</option></select>
+    <input id="nm" placeholder="Öğrenci adı" autocomplete="off">
+    <input id="pin" placeholder="PIN" type="password" inputmode="numeric">
+    <div class="err" id="err"></div>
+    <button id="go" style="width:100%">Giriş yap</button>
+  </div>`;
+  $("#role").onchange = () => $("#nm").style.display = $("#role").value === "student" ? "" : "none";
+  $("#go").onclick = doLogin;
+  $("#pin").onkeydown = (e) => e.key === "Enter" && doLogin();
+}
+
+async function doLogin() {
+  const role = $("#role").value, pin = $("#pin").value.trim(), err = $("#err");
+  err.textContent = "";
+  if (role === "teacher") {
+    const { data: r } = await db.from("settings").select("value").eq("key", "teacher_pin").single();
+    if (r && r.value === pin) return start({ role: "teacher" });
+    err.textContent = "PIN yanlış."; return;
+  }
+  const name = $("#nm").value.trim();
+  const { data: r } = await db.from("students").select("*").ilike("name", name).limit(1);
+  if (r && r[0] && r[0].pin === pin) return start({ role: "student", id: r[0].id, name: r[0].name });
+  err.textContent = "Ad veya PIN yanlış.";
+}
+
+function start(s) {
+  session = s; localStorage.setItem("odev_session", JSON.stringify(s));
+  $("#out").style.display = ""; load();
+}
+$("#out").onclick = () => { localStorage.removeItem("odev_session"); session = null; loginView(); };
+
+function render() {
+  if (!session) return loginView();
+  $("#out").style.display = "";
+  $("#who").textContent = session.role === "teacher" ? "Öğretmen" : session.name;
+  session.role === "teacher" ? teacherView() : studentView();
+}
+
+function annList() {
+  return data.anns.length ? data.anns.map(a => `<div class="ann">${esc(a.text)}<div class="mut">${fmt(a.created_at)}</div></div>`).join("") : `<div class="mut">Duyuru yok.</div>`;
+}
+
+function studentView() {
+  const mine = Object.fromEntries(data.subs.filter(x => x.student_id === session.id).map(x => [x.homework_id, x]));
+  const today = new Date().toISOString().slice(0, 10);
+  $("#app").innerHTML = `
+    <h2>📢 Duyurular</h2>${annList()}
+    <h2>📝 Ödevlerim</h2>
+    ${data.homeworks.map(h => {
+      const s = mine[h.id] || {};
+      const late = h.due_date && h.due_date < today && !s.done;
+      return `<div class="card">
+        <div class="row" style="justify-content:space-between"><b>${esc(h.title)}</b>
+          ${s.done ? '<span class="tag ok">Tamamlandı</span>' : late ? '<span class="tag late">Süresi geçti</span>' : ''}</div>
+        <div>${esc(h.description)}</div>
+        <div class="mut">${h.due_date ? "Son tarih: " + fmt(h.due_date) : ""}</div>
+        <label class="chk" style="margin-top:8px"><input type="checkbox" data-done="${h.id}" ${s.done ? "checked" : ""}> Ödevi yaptım</label>
+        ${s.score ? `<div style="margin-top:8px">🎯 Sonuç: <b>${esc(s.score)}</b></div>` : ""}
+        ${s.feedback ? `<div class="ann">💬 ${esc(s.feedback)}</div>` : ""}
+      </div>`;
+    }).join("") || `<div class="mut">Henüz ödev yok.</div>`}`;
+  document.querySelectorAll("[data-done]").forEach(el => el.onchange = async () => {
+    await db.from("submissions").upsert(
+      { homework_id: el.dataset.done, student_id: session.id, done: el.checked, updated_at: new Date().toISOString() },
+      { onConflict: "homework_id,student_id" });
+    load();
+  });
+}
+
+function teacherView() {
+  const tabs = [["odev", "Ödevler"], ["ogr", "Öğrenciler"], ["duy", "Duyurular"]];
+  let body = "";
+  if (tab === "odev") body = hwTab();
+  if (tab === "ogr") body = stTab();
+  if (tab === "duy") body = anTab();
+  $("#app").innerHTML = `<div class="tabs">${tabs.map(([k, v]) => `<button class="${tab === k ? "on" : ""}" data-tab="${k}">${v}</button>`).join("")}</div>${body}`;
+  document.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => { tab = b.dataset.tab; render(); });
+  bindTeacher();
+}
+
+function hwTab() {
+  return `
+  <div class="card"><b>Yeni ödev</b>
+    <input id="ht" placeholder="Başlık">
+    <textarea id="hd" rows="2" placeholder="Açıklama"></textarea>
+    <input id="hdue" type="date">
+    <button id="addhw">Ödev ver</button></div>
+  ${data.homeworks.map(h => {
+    const open = openHw === h.id;
+    const done = data.subs.filter(s => s.homework_id === h.id && s.done).length;
+    return `<div class="card">
+      <div class="row" style="justify-content:space-between"><b>${esc(h.title)}</b>
+        <span class="mut" style="flex:0">${done}/${data.students.length} yaptı</span></div>
+      <div>${esc(h.description)}</div><div class="mut">${h.due_date ? "Son tarih: " + fmt(h.due_date) : ""}</div>
+      <div class="row" style="margin-top:8px">
+        <button class="g s" data-open="${h.id}">${open ? "Gizle" : "Sonuç / geri bildirim"}</button>
+        <button class="r s" data-delhw="${h.id}">Sil</button></div>
+      ${open ? data.students.map(st => {
+        const s = data.subs.find(x => x.homework_id === h.id && x.student_id === st.id) || {};
+        return `<div class="sub"><b>${esc(st.name)}</b> ${s.done ? '<span class="tag ok">Yaptı</span>' : '<span class="tag">Yapmadı</span>'}
+          <input data-live="1" data-sc="${h.id}|${st.id}" placeholder="Sonuç (örn. 90)" value="${esc(s.score)}">
+          <input data-live="1" data-fb="${h.id}|${st.id}" placeholder="Geri bildirim" value="${esc(s.feedback)}">
+          <button class="s" data-save="${h.id}|${st.id}">Kaydet</button></div>`;
+      }).join("") || '<div class="mut">Önce öğrenci ekle.</div>' : ""}
+    </div>`;
+  }).join("")}`;
+}
+
+function stTab() {
+  return `
+  <div class="card"><b>Öğrenci ekle</b>
+    <input id="sn" placeholder="Ad Soyad"><input id="sp" placeholder="PIN (örn. 4821)" inputmode="numeric">
+    <button id="addst">Ekle</button></div>
+  ${data.students.map(s => `<div class="card row" style="justify-content:space-between">
+    <div><b>${esc(s.name)}</b><div class="mut">PIN: ${esc(s.pin)}</div></div>
+    <button class="r s" data-delst="${s.id}" style="flex:0">Sil</button></div>`).join("")}
+  <div class="card"><b>Öğretmen PIN'i değiştir</b><input id="tp" placeholder="Yeni PIN" inputmode="numeric"><button id="settp">Değiştir</button></div>`;
+}
+
+function anTab() {
+  return `
+  <div class="card"><b>Duyuru yaz</b><textarea id="at" rows="2" placeholder="Duyuru metni"></textarea><button id="addan">Yayınla</button></div>
+  ${data.anns.map(a => `<div class="card row" style="justify-content:space-between"><div>${esc(a.text)}<div class="mut">${fmt(a.created_at)}</div></div>
+    <button class="r s" data-delan="${a.id}" style="flex:0">Sil</button></div>`).join("")}`;
+}
+
+function bindTeacher() {
+  const on = (sel, fn) => { const e = $(sel); if (e) e.onclick = fn; };
+  on("#addhw", async () => {
+    const t = $("#ht").value.trim(); if (!t) return;
+    await db.from("homeworks").insert({ title: t, description: $("#hd").value.trim(), due_date: $("#hdue").value || null }); load();
+  });
+  on("#addst", async () => {
+    const n = $("#sn").value.trim(), p = $("#sp").value.trim(); if (!n || !p) return;
+    const r = await db.from("students").insert({ name: n, pin: p });
+    if (r.error) alert("Bu isim zaten var olabilir."); load();
+  });
+  on("#addan", async () => {
+    const t = $("#at").value.trim(); if (!t) return;
+    await db.from("announcements").insert({ text: t }); load();
+  });
+  on("#settp", async () => {
+    const p = $("#tp").value.trim(); if (!p) return;
+    await db.from("settings").upsert({ key: "teacher_pin", value: p }); alert("PIN değişti."); $("#tp").value = "";
+  });
+  document.querySelectorAll("[data-open]").forEach(b => b.onclick = () => { openHw = openHw === b.dataset.open ? null : b.dataset.open; render(); });
+  document.querySelectorAll("[data-delhw]").forEach(b => b.onclick = async () => { if (confirm("Ödev silinsin mi?")) { await db.from("homeworks").delete().eq("id", b.dataset.delhw); load(); } });
+  document.querySelectorAll("[data-delst]").forEach(b => b.onclick = async () => { if (confirm("Öğrenci silinsin mi?")) { await db.from("students").delete().eq("id", b.dataset.delst); load(); } });
+  document.querySelectorAll("[data-delan]").forEach(b => b.onclick = async () => { await db.from("announcements").delete().eq("id", b.dataset.delan); load(); });
+  document.querySelectorAll("[data-save]").forEach(b => b.onclick = async () => {
+    const [h, s] = b.dataset.save.split("|");
+    const old = data.subs.find(x => x.homework_id === h && x.student_id === s) || {};
+    await db.from("submissions").upsert({
+      homework_id: h, student_id: s, done: !!old.done,
+      score: document.querySelector(`[data-sc="${b.dataset.save}"]`).value,
+      feedback: document.querySelector(`[data-fb="${b.dataset.save}"]`).value,
+      updated_at: new Date().toISOString()
+    }, { onConflict: "homework_id,student_id" });
+    b.textContent = "Kaydedildi ✓"; setTimeout(load, 700);
+  });
+}
+
+(async function init() { listen(); session ? load() : loginView(); })();
+</script>
+</body>
+</html>
